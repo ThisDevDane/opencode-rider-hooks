@@ -25,6 +25,10 @@ connection.
 
 ## What to expect
 
+The hook checks Rider tool availability on every eligible edit, before resolving
+the session or edited file paths. If neither tool is available, it leaves the edit
+result unchanged. Connecting Rider later takes effect on the next edit.
+
 - Only changed C# files under `src` are processed, up to 20 per edit. Generated
   files, `bin`, `obj`, and other checkouts are excluded.
 - Formatting follows Rider's settings and `.editorconfig`. It can change the

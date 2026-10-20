@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises"
 import { resolve } from "node:path"
 import { Plugin } from "@opencode/plugin"
 import { changedPaths, isCSharpFile, isInsideDirectory, solutionFiles } from "./files.ts"
-import { appendReport, errorMessage, runRiderStep, type RiderRun } from "./rider.ts"
+import { appendReport, errorMessage, hasRiderTools, runRiderStep, type RiderRun } from "./rider.ts"
 
 const MAX_FILES_PER_EDIT = 20
 
@@ -23,6 +23,11 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
 
     let files: string[] = []
     try {
+      const tools = await plugin.tool.list()
+      if (!hasRiderTools(tools)) {
+        return
+      }
+
       const session = await plugin.session.get({ sessionID: event.sessionID })
       const workingDirectory = await realpath(session.location.directory)
       if (!isInsideDirectory(checkoutRoot, workingDirectory)) {
@@ -43,7 +48,7 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
           messageID: event.messageID,
           id: event.id,
         },
-        tools: await plugin.tool.list(),
+        tools,
         files: selectedFiles,
         omittedFileCount: files.length - selectedFiles.length,
         lifetime: lifetime.signal,

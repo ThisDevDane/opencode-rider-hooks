@@ -199,6 +199,50 @@ describe("reporting and cancellation", () => {
 })
 
 describe("post-edit hook", () => {
+  test("leaves the edit unchanged without resolving its session when both Rider tools are unavailable", async () => {
+    const fixture = createFixture(repositoryRoot, {
+      formatter: "unavailable",
+      diagnostics: "unavailable",
+      workingDirectory: join(repositoryRoot, "missing"),
+    })
+    const originalResult = fixture.event.result
+    await fixture.run()
+
+    expect(fixture.event.result).toBe(originalResult)
+    expect(fixture.lookupCounts).toEqual({ tools: 1, sessions: 0 })
+    expect(fixture.permissionActions).toEqual([])
+    expect(fixture.formatRequests).toEqual([])
+    expect(fixture.diagnosticRequests).toEqual([])
+  })
+
+  test("refreshes Rider tool availability for each edit without re-registering", async () => {
+    const fixture = createFixture(repositoryRoot, {
+      formatter: "unavailable",
+      diagnostics: "unavailable",
+    })
+    const originalResult = fixture.event.result
+    const hook = await fixture.start()
+    try {
+      await hook.run()
+      expect(fixture.event.result).toBe(originalResult)
+
+      fixture.setToolStates("available", "available")
+      await hook.run()
+      expect(fixture.formatRequests).toHaveLength(1)
+      expect(fixture.diagnosticRequests).toHaveLength(1)
+
+      const checkedResult = fixture.event.result
+      fixture.setToolStates("unavailable", "unavailable")
+      await hook.run()
+      expect(fixture.event.result).toBe(checkedResult)
+      expect(fixture.lookupCounts).toEqual({ tools: 3, sessions: 1 })
+      expect(fixture.formatRequests).toHaveLength(1)
+      expect(fixture.diagnosticRequests).toHaveLength(1)
+    } finally {
+      hook.cleanup()
+    }
+  })
+
   test("waits for formatting before diagnostics and preserves partial-result flags", async () => {
     const fixture = createFixture(repositoryRoot)
     await fixture.run()
@@ -307,6 +351,7 @@ describe("post-edit hook", () => {
           diagnostics: { status: "unavailable" },
         },
       })
+      expect(fixture.formatRequests).toHaveLength(1)
       if (state === "denied") {
         expect(fixture.diagnosticRequests).toHaveLength(0)
       }
@@ -337,6 +382,7 @@ describe("post-edit hook", () => {
 
     for (const fixture of [failedEdit, formatterCall, diagnosticsCall, unsupportedFile]) {
       await fixture.run()
+      expect(fixture.lookupCounts).toEqual({ tools: 0, sessions: 0 })
       expect(fixture.formatRequests).toHaveLength(0)
       expect(fixture.diagnosticRequests).toHaveLength(0)
     }

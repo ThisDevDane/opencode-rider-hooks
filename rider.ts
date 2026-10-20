@@ -39,6 +39,10 @@ export interface RiderRun {
   lifetime: AbortSignal
 }
 
+export function hasRiderTools(tools: RiderRun["tools"]): boolean {
+  return Object.values(STEPS).some(step => tools.some(tool => tool.id === step.toolName))
+}
+
 export function errorMessage(error: unknown): string {
   if (error !== null && typeof error === "object" && "message" in error) {
     if (error.message !== undefined && error.message !== null) {
