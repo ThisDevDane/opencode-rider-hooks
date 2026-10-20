@@ -1,15 +1,20 @@
 import { realpath } from "node:fs/promises"
-import { resolve } from "node:path"
 import { Plugin } from "@opencode/plugin"
-import { changedPaths, isCSharpFile, isInsideDirectory, solutionFiles } from "./files.ts"
+import { changedPaths, isCSharpFile, isInsideDirectory, sourceFiles } from "./files.ts"
+import { configuredProjectPath, projectDirectory } from "./projects.ts"
 import { appendReport, errorMessage, hasRiderTools, runRiderStep, type RiderRun } from "./rider.ts"
 
 const MAX_FILES_PER_EDIT = 20
 
 export async function register(plugin: Plugin.Context, repositoryRoot: string) {
   const checkoutRoot = await realpath(repositoryRoot)
-  const solutionRoot = await realpath(resolve(checkoutRoot, "src"))
   const lifetime = new AbortController()
+  let projectPath: string | undefined
+
+  // Read OpenCode's merged MCP configuration without parsing configuration files.
+  await plugin.mcp.transform(editor => {
+    projectPath = configuredProjectPath(editor.get("rider"))
+  })
 
   await plugin.tool.hook("execute.after", async event => {
     if (event.status !== "completed") {
@@ -34,7 +39,10 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
         return
       }
 
-      files = await solutionFiles(paths, workingDirectory, solutionRoot)
+      const selector = projectPath
+      const root = selector ? await projectDirectory(selector, checkoutRoot) : checkoutRoot
+      files = (await sourceFiles(paths, workingDirectory, checkoutRoot))
+        .filter(file => isInsideDirectory(root, file))
       if (files.length === 0) {
         return
       }
@@ -49,6 +57,7 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
           id: event.id,
         },
         tools,
+        projectPath: selector,
         files: selectedFiles,
         omittedFileCount: files.length - selectedFiles.length,
         lifetime: lifetime.signal,

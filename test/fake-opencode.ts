@@ -1,4 +1,4 @@
-import type { Plugin } from "@opencode/plugin"
+import type { Mcp, Plugin } from "@opencode/plugin"
 import type { Result } from "@opencode/plugin/promise/tool"
 import { register } from "../index.ts"
 import type { StepName } from "../rider.ts"
@@ -7,6 +7,8 @@ export type ToolState = "available" | "unavailable" | "denied" | "failed"
 
 interface FixtureOptions {
   workingDirectory?: string
+  mcpServer?: Mcp.ServerConfig
+  projectErrors?: Record<string, string>
   formatter?: ToolState
   diagnostics?: ToolState
   formatterOutput?: string
@@ -15,6 +17,7 @@ interface FixtureOptions {
 
 interface FormatRequest {
   files: string[]
+  projectPath?: string
 }
 
 interface DiagnosticRequest extends FormatRequest {
@@ -45,12 +48,20 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   const executionOrder: string[] = []
   const lookupCounts = { tools: 0, sessions: 0 }
 
+  function checkProject(input: FormatRequest) {
+    const error = input.projectPath && options.projectErrors?.[input.projectPath]
+    if (error) {
+      throw new Error(error)
+    }
+  }
+
   const formatter = {
     id: "rider_reformat_file",
     async execute(input: FormatRequest) {
       formatRequests.push(input)
       executionOrder.push("formatting started")
       await Promise.resolve()
+      checkProject(input)
       if (formatterState === "failed") {
         throw new Error("Rider formatter failed")
       }
@@ -64,6 +75,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
     async execute(input: DiagnosticRequest) {
       diagnosticRequests.push(input)
       executionOrder.push("diagnostics")
+      checkProject(input)
       if (diagnosticsState === "failed") {
         throw new Error("Rider disconnected")
       }
@@ -75,6 +87,18 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   // Only implement the OpenCode methods this plugin uses. Keep the cast here,
   // rather than weakening the event and request types throughout the tests.
   const plugin = {
+    mcp: {
+      async transform(callback: (editor: { get(name: string): Mcp.ServerConfig | undefined }) => void) {
+        callback({
+          get(name) {
+            if (name !== "rider") {
+              throw new Error(`Unexpected MCP server: ${name}`)
+            }
+            return options.mcpServer
+          },
+        })
+      },
+    },
     session: {
       async get() {
         lookupCounts.sessions++

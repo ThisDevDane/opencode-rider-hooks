@@ -24,12 +24,12 @@ export function isCSharpFile(path: string): boolean {
   return /\.cs$/i.test(path)
 }
 
-function isEligibleSourceFile(solutionRoot: string, path: string): boolean {
-  if (!isInsideDirectory(solutionRoot, path) || !isCSharpFile(path)) {
+function isEligibleSourceFile(root: string, path: string): boolean {
+  if (!isInsideDirectory(root, path) || !isCSharpFile(path)) {
     return false
   }
 
-  const relativePath = relative(solutionRoot, path)
+  const relativePath = relative(root, path)
   const directories = relativePath.split(sep)
   if (directories.some(directory => EXCLUDED_DIRECTORIES.has(directory))) {
     return false
@@ -65,13 +65,13 @@ export function changedPaths(tool: string, input: unknown, result: Result): stri
   return typeof path === "string" ? [path] : []
 }
 
-export async function solutionFiles(
+export async function sourceFiles(
   paths: string[],
   workingDirectory: string,
-  solutionRoot: string,
+  rootDirectory: string,
 ): Promise<string[]> {
   const directory = await realpath(workingDirectory)
-  const root = await realpath(solutionRoot)
+  const root = await realpath(rootDirectory)
   const files = new Set<string>()
 
   for (const path of new Set(paths)) {
@@ -84,8 +84,7 @@ export async function solutionFiles(
       // Check again after resolving symlinks so aliases cannot bypass exclusions.
       const actualPath = await realpath(absolutePath)
       if (isEligibleSourceFile(root, actualPath)) {
-        const solutionPath = relative(root, actualPath).split(sep).join("/")
-        files.add(solutionPath)
+        files.add(actualPath)
       }
     } catch (error) {
       // A file may have been deleted since the edit completed.

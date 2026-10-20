@@ -34,6 +34,7 @@ export interface RiderRun {
   plugin: Plugin.Context
   call: Pick<ToolContext, "sessionID" | "agent" | "messageID" | "id">
   tools: readonly (Info & { readonly id: string })[]
+  projectPath?: string
   files: string[]
   omittedFileCount: number
   lifetime: AbortSignal
@@ -98,6 +99,11 @@ function reportText(result: Result, stepName: StepName): string {
   if (!text) {
     text = `Rider returned no output; ${stepName} is not confirmed.`
   }
+
+  return boundedReportText(text, stepName)
+}
+
+function boundedReportText(text: string, stepName: StepName): string {
   if (text.length <= MAX_REPORT_CHARACTERS) {
     return text
   }
@@ -166,24 +172,47 @@ export async function runRiderStep(
       source: { type: "tool", messageID: run.call.messageID, id: run.call.id },
       action: step.toolName,
       resources: ["*"],
-      metadata: { files: run.files },
+      metadata: { files: run.files, projectPath: run.projectPath },
     })
 
-    const input = stepName === "formatting"
-      ? { files: run.files }
-      : { files: run.files, min_severity: "warning", timeout: ANALYSIS_TIMEOUT_MS }
+    // A scoped connection supplies its own selector. Otherwise let Rider select
+    // the open project containing each file. Absolute paths avoid guessing the
+    // selected project's base directory, which may differ from the checkout.
+    const requests = run.projectPath
+      ? [{ files: run.files }]
+      : run.files.map(file => ({ files: [file], projectPath: file }))
 
-    const result = await withDeadline(signal => tool.execute(input, {
-      ...run.call,
-      signal,
-      progress: async () => {},
-    }), run.lifetime, OPERATION_TIMEOUT_MS)
+    const report = await withDeadline(async signal => {
+      const texts: string[] = []
+      let failed = false
+      for (const request of requests) {
+        signal.throwIfAborted()
+        const input = stepName === "formatting"
+          ? request
+          : { ...request, min_severity: "warning", timeout: ANALYSIS_TIMEOUT_MS }
+
+        try {
+          const result = await tool.execute(input, {
+            ...run.call,
+            signal,
+            progress: async () => {},
+          })
+          signal.throwIfAborted()
+          texts.push(reportText(result, stepName))
+        } catch (error) {
+          signal.throwIfAborted()
+          failed = true
+          texts.push(`${step.failureLabel} did not complete for ${request.files.join(", ")}: ${errorMessage(error)}`)
+        }
+      }
+      return { text: boundedReportText(texts.join("\n"), stepName), failed }
+    }, run.lifetime, OPERATION_TIMEOUT_MS)
 
     return appendReport(originalResult, {
       step: stepName,
-      text: reportText(result, stepName) + omittedFilesMessage(run.omittedFileCount, stepName),
+      text: report.text + omittedFilesMessage(run.omittedFileCount, stepName),
       files: run.files,
-      status: step.successStatus,
+      status: report.failed ? "unavailable" : step.successStatus,
     })
   } catch (error) {
     // Each step handles its own failure so diagnostics can follow a failed format.

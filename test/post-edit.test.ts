@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, test } from "node:test"
-import { changedPaths, solutionFiles } from "../files.ts"
+import { pathToFileURL } from "node:url"
+import { changedPaths, sourceFiles } from "../files.ts"
 import { appendReport, withDeadline } from "../rider.ts"
 import { createFixture, getReportText } from "./fake-opencode.ts"
 
@@ -60,25 +61,25 @@ describe("changed files", () => {
     }
   })
 
-  test("converts repository, nested-directory, and absolute paths to solution paths", async () => {
+  test("canonicalizes repository, nested-directory, and absolute paths", async () => {
     const solutionRoot = join(repositoryRoot, "src")
     const absolutePath = join(repositoryRoot, "src/App/Example.cs")
-    const files = await solutionFiles(
+    const files = await sourceFiles(
       ["src/App/Example.cs", absolutePath],
       repositoryRoot,
       solutionRoot,
     )
-    const nestedFiles = await solutionFiles(
+    const nestedFiles = await sourceFiles(
       ["Example.cs"],
       join(solutionRoot, "App"),
       solutionRoot,
     )
 
-    assert.deepEqual(files, ["App/Example.cs"])
-    assert.deepEqual(nestedFiles, ["App/Example.cs"])
+    assert.deepEqual(files, [absolutePath])
+    assert.deepEqual(nestedFiles, [absolutePath])
   })
 
-  test("excludes generated files, unsupported files, missing files, and paths outside src", async () => {
+  test("excludes generated files, unsupported files, missing files, and paths outside the selected root", async () => {
     const generatedFiles = [
       "src/App/obj/Output.cs",
       "src/App/bin/Output.cs",
@@ -90,7 +91,7 @@ describe("changed files", () => {
       await createFile(path)
     }
 
-    const files = await solutionFiles([
+    const files = await sourceFiles([
       "src/App/Example.cs",
       ...generatedFiles,
       "src/App/appsettings.json",
@@ -99,7 +100,7 @@ describe("changed files", () => {
       "outside.cs",
     ], repositoryRoot, join(repositoryRoot, "src"))
 
-    assert.deepEqual(files, ["App/Example.cs"])
+    assert.deepEqual(files, [join(repositoryRoot, "src/App/Example.cs")])
   })
 
   test("rejects symlinks that lead outside the solution", async () => {
@@ -109,7 +110,7 @@ describe("changed files", () => {
       join(repositoryRoot, "src/App/Link.cs"),
     )
 
-    const files = await solutionFiles(
+    const files = await sourceFiles(
       ["src/App/Link.cs"], repositoryRoot, join(repositoryRoot, "src"),
     )
     assert.deepEqual(files, [])
@@ -127,7 +128,7 @@ describe("changed files", () => {
       join(repositoryRoot, "src/App/JsonLink.cs"),
     )
 
-    const files = await solutionFiles(
+    const files = await sourceFiles(
       ["src/App/GeneratedLink.cs", "src/App/JsonLink.cs"],
       repositoryRoot,
       join(repositoryRoot, "src"),
@@ -244,13 +245,221 @@ describe("post-edit hook", () => {
     }
   })
 
+  test("does not require src, a solution, or a project file", async () => {
+    await rm(join(repositoryRoot, "src"), { recursive: true })
+    await createFile("Program.cs", "class Program {}")
+    const file = join(repositoryRoot, "Program.cs")
+    const fixture = createFixture(repositoryRoot)
+    fixture.setEditedFiles(["Program.cs"])
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [{ files: [file], projectPath: file }])
+    assert.partialDeepStrictEqual(fixture.diagnosticRequests[0], { files: [file], projectPath: file })
+  })
+
+  test("routes relative edits from nested sessions using canonical file paths", async () => {
+    const file = join(repositoryRoot, "src/App/Example.cs")
+    const fixture = createFixture(repositoryRoot, {
+      workingDirectory: join(repositoryRoot, "src/App"),
+    })
+    fixture.setEditedFiles(["Example.cs", file])
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [{ files: [file], projectPath: file }])
+    assert.equal(fixture.diagnosticRequests.length, 1)
+  })
+
+  test("rejects file symlinks that escape the checkout during unscoped routing", async () => {
+    const otherRoot = await mkdtemp(join(dirname(repositoryRoot), "rider-other-"))
+    try {
+      const outside = join(otherRoot, "Example.cs")
+      await writeFile(outside, "class Example {}")
+      await symlink(outside, join(repositoryRoot, "src/App/Link.cs"))
+      const fixture = createFixture(repositoryRoot)
+      fixture.setEditedFiles(["src/App/Link.cs", outside])
+      await fixture.run()
+
+      assert.equal(fixture.formatRequests.length, 0)
+      assert.equal(fixture.diagnosticRequests.length, 0)
+    } finally {
+      await rm(otherRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("uses the configured HTTP selector without overriding it", async () => {
+    await createFile("backend/Example.cs")
+    const root = join(repositoryRoot, "backend")
+    const file = join(root, "Example.cs")
+    const fixture = createFixture(repositoryRoot, {
+      mcpServer: {
+        type: "remote",
+        url: "http://localhost:64342/stream",
+        headers: { IJ_MCP_SERVER_PROJECT_PATH: root },
+      },
+    })
+    fixture.setEditedFiles(["backend/Example.cs", "src/App/Example.cs"])
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [{ files: [file] }])
+    assert.deepEqual(fixture.diagnosticRequests, [{
+      files: [file], min_severity: "warning", timeout: 10_000,
+    }])
+  })
+
+  test("batches files on a scoped stdio connection", async () => {
+    await createFile("src/App/Second.cs")
+    const root = join(repositoryRoot, "src")
+    const files = [join(root, "App/Example.cs"), join(root, "App/Second.cs")]
+    const fixture = createFixture(repositoryRoot, {
+      mcpServer: {
+        type: "local",
+        command: ["rider", "stdioMcpServer"],
+        environment: { IJ_MCP_SERVER_PROJECT_PATH: root },
+      },
+    })
+    fixture.setEditedFiles(files)
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [{ files }])
+    assert.equal(fixture.diagnosticRequests.length, 1)
+  })
+
+  test("supports file-URI selectors and canonicalizes symlinked directories", async () => {
+    await symlink(join(repositoryRoot, "src"), join(repositoryRoot, "backend"))
+    const file = join(repositoryRoot, "src/App/Example.cs")
+    const fixture = createFixture(repositoryRoot, {
+      mcpServer: {
+        type: "remote",
+        url: "http://localhost:64342/stream",
+        headers: {
+          IJ_MCP_SERVER_PROJECT_PATH: pathToFileURL(join(repositoryRoot, "backend")).href,
+        },
+      },
+    })
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [{ files: [file] }])
+  })
+
+  test("accepts a selector pointing at a solution file", async () => {
+    await createFile("src/App.slnx")
+    const fixture = createFixture(repositoryRoot, {
+      mcpServer: {
+        type: "remote",
+        url: "http://localhost:64342/stream",
+        headers: { IJ_MCP_SERVER_PROJECT_PATH: join(repositoryRoot, "src/App.slnx") },
+      },
+    })
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [{
+      files: [join(repositoryRoot, "src/App/Example.cs")],
+    }])
+  })
+
+  test("routes monorepo edits through Rider regardless of solution format", async () => {
+    const paths = [
+      "apps/store/Program.cs",
+      "services/payments/Program.cs",
+      "tools/importer/Program.cs",
+    ]
+    for (const path of [
+      "apps/store/Store.slnx", "services/payments/Payments.sln", "tools/importer/Importer.csproj",
+      ...paths,
+    ]) {
+      await createFile(path)
+    }
+    const fixture = createFixture(repositoryRoot)
+    fixture.setEditedFiles(paths)
+    await fixture.run()
+
+    const requests = paths.map(path => {
+      const file = join(repositoryRoot, path)
+      return { files: [file], projectPath: file }
+    })
+    assert.deepEqual(fixture.formatRequests, requests)
+    assert.deepEqual(fixture.diagnosticRequests, requests.map(request => ({
+      ...request, min_severity: "warning", timeout: 10_000,
+    })))
+    assert.deepEqual(fixture.executionOrder, [
+      "formatting started", "formatting completed",
+      "formatting started", "formatting completed",
+      "formatting started", "formatting completed",
+      "diagnostics", "diagnostics", "diagnostics",
+    ])
+    assert.deepEqual(fixture.permissionActions, ["rider_reformat_file", "rider_lint_files"])
+  })
+
+  test("preserves project-selection errors and continues with other files", async () => {
+    await createFile("other/Example.cs")
+    const file = join(repositoryRoot, "src/App/Example.cs")
+    const error = "Unable to determine the target project for the current MCP tool call."
+    const fixture = createFixture(repositoryRoot, { projectErrors: { [file]: error } })
+    fixture.setEditedFiles([file, "other/Example.cs"])
+    await fixture.run()
+
+    assert.equal(fixture.formatRequests.length, 2)
+    assert.equal(fixture.diagnosticRequests.length, 2)
+    assert.ok(getReportText(fixture.event.result, "formatting").includes(error))
+    assert.ok(getReportText(fixture.event.result, "diagnostics").includes(error))
+    assert.partialDeepStrictEqual(fixture.event.result.metadata, {
+      riderPostEdit: {
+        formatting: { status: "unavailable" },
+        diagnostics: { status: "unavailable" },
+      },
+    })
+    assert.deepEqual(fixture.event.result.content?.[0], { type: "text", text: "Edit succeeded" })
+  })
+
+  test("does not fall back when a configured selector is invalid", async () => {
+    const selectors = [
+      ".", join(repositoryRoot, "missing"), dirname(repositoryRoot),
+    ]
+    await symlink(dirname(repositoryRoot), join(repositoryRoot, "outside"))
+    selectors.push(join(repositoryRoot, "outside"))
+
+    for (const selector of selectors) {
+      const fixture = createFixture(repositoryRoot, {
+        mcpServer: {
+          type: "remote",
+          url: "http://localhost:64342/stream",
+          headers: { IJ_MCP_SERVER_PROJECT_PATH: selector },
+        },
+      })
+      await fixture.run()
+
+      assert.equal(fixture.formatRequests.length, 0)
+      assert.equal(fixture.diagnosticRequests.length, 0)
+      assert.ok(getReportText(fixture.event.result, "diagnostics").includes("Check skipped"))
+      assert.deepEqual(fixture.event.result.content?.[0], { type: "text", text: "Edit succeeded" })
+    }
+  })
+
+  test("keeps generated-directory exclusions even when the configured selector is inside one", async () => {
+    await createFile("src/App/obj/Output.cs")
+    const fixture = createFixture(repositoryRoot, {
+      mcpServer: {
+        type: "remote",
+        url: "http://localhost:64342/stream",
+        headers: { IJ_MCP_SERVER_PROJECT_PATH: join(repositoryRoot, "src/App/obj") },
+      },
+    })
+    fixture.setEditedFiles(["src/App/obj/Output.cs"])
+    await fixture.run()
+
+    assert.equal(fixture.formatRequests.length, 0)
+    assert.equal(fixture.diagnosticRequests.length, 0)
+  })
+
   test("waits for formatting before diagnostics and preserves partial-result flags", async () => {
     const fixture = createFixture(repositoryRoot)
     await fixture.run()
 
-    assert.deepEqual(fixture.formatRequests, [{ files: ["App/Example.cs"] }])
+    const file = join(repositoryRoot, "src/App/Example.cs")
+    assert.deepEqual(fixture.formatRequests, [{ files: [file], projectPath: file }])
     assert.deepEqual(fixture.diagnosticRequests, [{
-      files: ["App/Example.cs"],
+      files: [file],
+      projectPath: file,
       min_severity: "warning",
       timeout: 10_000,
     }])
@@ -312,8 +521,8 @@ describe("post-edit hook", () => {
     fixture.setEditedFiles(paths)
     await fixture.run()
 
-    assert.equal(fixture.formatRequests[0].files.length, 20)
-    assert.equal(fixture.diagnosticRequests[0].files.length, 20)
+    assert.equal(fixture.formatRequests.flatMap(request => request.files).length, 20)
+    assert.equal(fixture.diagnosticRequests.flatMap(request => request.files).length, 20)
     assert.ok(getReportText(fixture.event.result, "formatting")
       .includes("1 additional file was not formatted"))
     assert.ok(getReportText(fixture.event.result, "diagnostics")
@@ -336,6 +545,21 @@ describe("post-edit hook", () => {
     const report = getReportText(fixture.event.result, "formatting")
     assert.ok(report.includes("Formatting output truncated. Run rider_reformat_file"))
     assert.ok(report.length < 13_000)
+  })
+
+  test("bounds combined output across unscoped file requests", async () => {
+    await createFile("src/App/Second.cs")
+    const fixture = createFixture(repositoryRoot, {
+      formatterOutput: "x".repeat(8000), diagnosticOutput: "y".repeat(8000),
+    })
+    fixture.setEditedFiles(["src/App/Example.cs", "src/App/Second.cs"])
+    await fixture.run()
+
+    for (const step of ["formatting", "diagnostics"] as const) {
+      const report = getReportText(fixture.event.result, step)
+      assert.ok(report.includes("truncated"))
+      assert.ok(report.length < 13_000)
+    }
   })
 
   for (const state of ["unavailable", "denied", "failed"] as const) {
