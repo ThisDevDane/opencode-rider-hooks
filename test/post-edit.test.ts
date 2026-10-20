@@ -200,6 +200,50 @@ describe("reporting and cancellation", () => {
 })
 
 describe("post-edit hook", () => {
+  test("leaves the edit unchanged without resolving its session when both Rider tools are unavailable", async () => {
+    const fixture = createFixture(repositoryRoot, {
+      formatter: "unavailable",
+      diagnostics: "unavailable",
+      workingDirectory: join(repositoryRoot, "missing"),
+    })
+    const originalResult = fixture.event.result
+    await fixture.run()
+
+    assert.equal(fixture.event.result, originalResult)
+    assert.deepEqual(fixture.lookupCounts, { tools: 1, sessions: 0 })
+    assert.deepEqual(fixture.permissionActions, [])
+    assert.deepEqual(fixture.formatRequests, [])
+    assert.deepEqual(fixture.diagnosticRequests, [])
+  })
+
+  test("refreshes Rider tool availability for each edit without re-registering", async () => {
+    const fixture = createFixture(repositoryRoot, {
+      formatter: "unavailable",
+      diagnostics: "unavailable",
+    })
+    const originalResult = fixture.event.result
+    const hook = await fixture.start()
+    try {
+      await hook.run()
+      assert.equal(fixture.event.result, originalResult)
+
+      fixture.setToolStates("available", "available")
+      await hook.run()
+      assert.equal(fixture.formatRequests.length, 1)
+      assert.equal(fixture.diagnosticRequests.length, 1)
+
+      const checkedResult = fixture.event.result
+      fixture.setToolStates("unavailable", "unavailable")
+      await hook.run()
+      assert.equal(fixture.event.result, checkedResult)
+      assert.deepEqual(fixture.lookupCounts, { tools: 3, sessions: 1 })
+      assert.equal(fixture.formatRequests.length, 1)
+      assert.equal(fixture.diagnosticRequests.length, 1)
+    } finally {
+      hook.cleanup()
+    }
+  })
+
   test("waits for formatting before diagnostics and preserves partial-result flags", async () => {
     const fixture = createFixture(repositoryRoot)
     await fixture.run()
@@ -308,6 +352,7 @@ describe("post-edit hook", () => {
           diagnostics: { status: "unavailable" },
         },
       })
+      assert.equal(fixture.formatRequests.length, 1)
       if (state === "denied") {
         assert.equal(fixture.diagnosticRequests.length, 0)
       }
@@ -338,6 +383,7 @@ describe("post-edit hook", () => {
 
     for (const fixture of [failedEdit, formatterCall, diagnosticsCall, unsupportedFile]) {
       await fixture.run()
+      assert.deepEqual(fixture.lookupCounts, { tools: 0, sessions: 0 })
       assert.equal(fixture.formatRequests.length, 0)
       assert.equal(fixture.diagnosticRequests.length, 0)
     }

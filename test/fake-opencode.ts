@@ -37,10 +37,13 @@ type AfterEditHook = (event: TestEvent) => Promise<void>
 
 export function createFixture(repositoryRoot: string, options: FixtureOptions = {}) {
   let afterEdit: AfterEditHook | undefined
+  let formatterState = options.formatter
+  let diagnosticsState = options.diagnostics
   const formatRequests: FormatRequest[] = []
   const diagnosticRequests: DiagnosticRequest[] = []
   const permissionActions: string[] = []
   const executionOrder: string[] = []
+  const lookupCounts = { tools: 0, sessions: 0 }
 
   const formatter = {
     id: "rider_reformat_file",
@@ -48,7 +51,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
       formatRequests.push(input)
       executionOrder.push("formatting started")
       await Promise.resolve()
-      if (options.formatter === "failed") {
+      if (formatterState === "failed") {
         throw new Error("Rider formatter failed")
       }
       executionOrder.push("formatting completed")
@@ -61,7 +64,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
     async execute(input: DiagnosticRequest) {
       diagnosticRequests.push(input)
       executionOrder.push("diagnostics")
-      if (options.diagnostics === "failed") {
+      if (diagnosticsState === "failed") {
         throw new Error("Rider disconnected")
       }
       const text = options.diagnosticOutput ?? '{"items":[],"more":true}'
@@ -74,6 +77,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   const plugin = {
     session: {
       async get() {
+        lookupCounts.sessions++
         return { location: { directory: options.workingDirectory ?? repositoryRoot } }
       },
     },
@@ -85,11 +89,12 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
         afterEdit = callback
       },
       async list() {
+        lookupCounts.tools++
         const tools = []
-        if (options.formatter !== "unavailable") {
+        if (formatterState !== "unavailable") {
           tools.push(formatter)
         }
-        if (options.diagnostics !== "unavailable") {
+        if (diagnosticsState !== "unavailable") {
           tools.push(diagnostics)
         }
         return tools
@@ -98,8 +103,8 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
     permission: {
       async assert(request: { action: string }) {
         permissionActions.push(request.action)
-        const formattingDenied = request.action === formatter.id && options.formatter === "denied"
-        const diagnosticsDenied = request.action === diagnostics.id && options.diagnostics === "denied"
+        const formattingDenied = request.action === formatter.id && formatterState === "denied"
+        const diagnosticsDenied = request.action === diagnostics.id && diagnosticsState === "denied"
         if (formattingDenied || diagnosticsDenied) {
           throw new Error("Permission denied")
         }
@@ -121,12 +126,31 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
     },
   }
 
+  async function start() {
+    const cleanup = await register(plugin, repositoryRoot)
+    return {
+      async run() {
+        if (!afterEdit) {
+          throw new Error("Post-edit hook was not registered")
+        }
+        await afterEdit(event)
+      },
+      cleanup,
+    }
+  }
+
   return {
     event,
     formatRequests,
     diagnosticRequests,
     permissionActions,
     executionOrder,
+    lookupCounts,
+    start,
+    setToolStates(formatter: ToolState, diagnostics: ToolState) {
+      formatterState = formatter
+      diagnosticsState = diagnostics
+    },
     setEditedFiles(paths: string[]) {
       event.result = {
         ...event.result,
@@ -134,14 +158,11 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
       }
     },
     async run() {
-      const cleanup = await register(plugin, repositoryRoot)
+      const hook = await start()
       try {
-        if (!afterEdit) {
-          throw new Error("Post-edit hook was not registered")
-        }
-        await afterEdit(event)
+        await hook.run()
       } finally {
-        cleanup()
+        hook.cleanup()
       }
     },
   }
