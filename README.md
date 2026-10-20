@@ -1,4 +1,4 @@
-# Rider post-edit formatting and diagnostics
+# OpenCode Rider hooks
 
 OpenCode V2 discovers this project-local plugin automatically. After successful
 native `write`, `edit`, and `patch` calls, it runs Rider's `reformat_file` on the
@@ -38,13 +38,20 @@ diagnostic statuses are recorded separately in the tool-result metadata.
 
 Keep Rider open with the solution loaded. Verify the plugin with
 `opencode plugin list` from the repository root. To disable it, append
-`"-local.rider-post-edit"` to the project's `plugins` array in
+`"-opencode-rider-hooks"` to the project's `plugins` array in
 `.opencode/opencode.json`.
 
-Run the plugin's checks from this directory:
+## Development
+
+Node.js 24 LTS and pnpm are managed by `mise.toml`. This package is private and
+intended for local use. Node runs the TypeScript directly; no build step is needed.
+
+Install the tools and dependencies, then run the plugin's checks from this directory:
 
 ```sh
-mise exec bun@1.4.3 -- bun install
-mise exec bun@1.4.3 -- bun test
-mise exec bun@1.4.3 -- bun run check
+mise trust
+mise install
+mise exec -- pnpm install --frozen-lockfile
+mise exec -- pnpm test
+mise exec -- pnpm check
 ```

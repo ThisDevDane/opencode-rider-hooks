@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import assert from "node:assert/strict"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { afterEach, beforeEach, describe, test } from "node:test"
 import { changedPaths, solutionFiles } from "../files.ts"
 import { appendReport, withDeadline } from "../rider.ts"
 import { createFixture, getReportText } from "./fake-opencode.ts"
@@ -38,24 +39,24 @@ describe("changed files", () => {
       },
     }
 
-    expect(changedPaths("patch", input, result)).toEqual([
+    assert.deepEqual(changedPaths("patch", input, result), [
       "src/App/Example.cs",
       "src/App/New.cs",
     ])
-    expect(changedPaths("patch", input, {})).toEqual([])
+    assert.deepEqual(changedPaths("patch", input, {}), [])
   })
 
   test("recognizes write and edit paths but trusts an explicit empty file list", () => {
     const filePath = "src/App/Example.cs"
-    expect(changedPaths("write", { filePath }, {})).toEqual([filePath])
-    expect(changedPaths("edit", { path: filePath }, {})).toEqual([filePath])
-    expect(changedPaths("write", { filePath }, { metadata: { files: [] } })).toEqual([])
+    assert.deepEqual(changedPaths("write", { filePath }, {}), [filePath])
+    assert.deepEqual(changedPaths("edit", { path: filePath }, {}), [filePath])
+    assert.deepEqual(changedPaths("write", { filePath }, { metadata: { files: [] } }), [])
   })
 
   test("ignores shell and Rider tools, preventing recursive formatting", () => {
     const result = { metadata: { files: [{ file: "src/App/Example.cs" }] } }
     for (const tool of ["shell", "rider_reformat_file", "rider_lint_files"]) {
-      expect(changedPaths(tool, { path: "src/App/Example.cs" }, result)).toEqual([])
+      assert.deepEqual(changedPaths(tool, { path: "src/App/Example.cs" }, result), [])
     }
   })
 
@@ -73,8 +74,8 @@ describe("changed files", () => {
       solutionRoot,
     )
 
-    expect(files).toEqual(["App/Example.cs"])
-    expect(nestedFiles).toEqual(["App/Example.cs"])
+    assert.deepEqual(files, ["App/Example.cs"])
+    assert.deepEqual(nestedFiles, ["App/Example.cs"])
   })
 
   test("excludes generated files, unsupported files, missing files, and paths outside src", async () => {
@@ -98,7 +99,7 @@ describe("changed files", () => {
       "outside.cs",
     ], repositoryRoot, join(repositoryRoot, "src"))
 
-    expect(files).toEqual(["App/Example.cs"])
+    assert.deepEqual(files, ["App/Example.cs"])
   })
 
   test("rejects symlinks that lead outside the solution", async () => {
@@ -111,7 +112,7 @@ describe("changed files", () => {
     const files = await solutionFiles(
       ["src/App/Link.cs"], repositoryRoot, join(repositoryRoot, "src"),
     )
-    expect(files).toEqual([])
+    assert.deepEqual(files, [])
   })
 
   test("rejects symlinks into generated output and non-C# files", async () => {
@@ -131,7 +132,7 @@ describe("changed files", () => {
       repositoryRoot,
       join(repositoryRoot, "src"),
     )
-    expect(files).toEqual([])
+    assert.deepEqual(files, [])
   })
 })
 
@@ -149,12 +150,12 @@ describe("reporting and cancellation", () => {
       status: "checked",
     })
 
-    expect(result.content).toEqual([
+    assert.deepEqual(result.content, [
       { type: "text", text: "Edit succeeded" },
       { type: "text", text: "Rider post-edit diagnostics\nwarning" },
     ])
-    expect(result.output).toEqual({ saved: true })
-    expect(result.metadata?.files).toEqual(["original"])
+    assert.deepEqual(result.output, { saved: true })
+    assert.deepEqual(result.metadata?.files, ["original"])
   })
 
   test("bounds slow calls and aborts their signal", async () => {
@@ -164,10 +165,11 @@ describe("reporting and cancellation", () => {
       return await new Promise<never>(() => {})
     }
 
-    await expect(
+    await assert.rejects(
       withDeadline(operation, new AbortController().signal, 5),
-    ).rejects.toThrow("timed out")
-    expect(operationSignal?.aborted).toBe(true)
+      /timed out/,
+    )
+    assert.equal(operationSignal?.aborted, true)
   })
 
   test("does not start work after plugin cleanup", async () => {
@@ -176,9 +178,8 @@ describe("reporting and cancellation", () => {
     let started = false
     const operation = async () => { started = true }
 
-    await expect(withDeadline(operation, lifetime.signal, 1000))
-      .rejects.toThrow("Plugin unloaded")
-    expect(started).toBe(false)
+    await assert.rejects(withDeadline(operation, lifetime.signal, 1000), /Plugin unloaded/)
+    assert.equal(started, false)
   })
 
   test("cancels an in-flight operation when the plugin unloads", async () => {
@@ -193,8 +194,8 @@ describe("reporting and cancellation", () => {
     const operationSignal = await started.promise
     lifetime.abort(new Error("Plugin unloaded"))
 
-    await expect(result).rejects.toThrow("Plugin unloaded")
-    expect(operationSignal.aborted).toBe(true)
+    await assert.rejects(result, /Plugin unloaded/)
+    assert.equal(operationSignal.aborted, true)
   })
 })
 
@@ -203,24 +204,24 @@ describe("post-edit hook", () => {
     const fixture = createFixture(repositoryRoot)
     await fixture.run()
 
-    expect(fixture.formatRequests).toEqual([{ files: ["App/Example.cs"] }])
-    expect(fixture.diagnosticRequests).toEqual([{
+    assert.deepEqual(fixture.formatRequests, [{ files: ["App/Example.cs"] }])
+    assert.deepEqual(fixture.diagnosticRequests, [{
       files: ["App/Example.cs"],
       min_severity: "warning",
       timeout: 10_000,
     }])
-    expect(fixture.executionOrder).toEqual([
+    assert.deepEqual(fixture.executionOrder, [
       "formatting started", "formatting completed", "diagnostics",
     ])
-    expect(fixture.permissionActions).toEqual(["rider_reformat_file", "rider_lint_files"])
-    expect(fixture.event.result.metadata).toMatchObject({
+    assert.deepEqual(fixture.permissionActions, ["rider_reformat_file", "rider_lint_files"])
+    assert.partialDeepStrictEqual(fixture.event.result.metadata, {
       riderPostEdit: {
         status: "checked",
         formatting: { status: "formatted" },
         diagnostics: { status: "checked" },
       },
     })
-    expect(getReportText(fixture.event.result, "diagnostics")).toContain('"more":true')
+    assert.ok(getReportText(fixture.event.result, "diagnostics").includes('"more":true'))
   })
 
   test("includes the formatter diff without replacing the edit or diagnostic output", async () => {
@@ -229,10 +230,10 @@ describe("post-edit hook", () => {
     await fixture.run()
 
     const result = fixture.event.result
-    expect(result.content?.[0]).toEqual({ type: "text", text: "Edit succeeded" })
-    expect(getReportText(result, "formatting")).toBe(`Rider post-edit formatting\n${diff}`)
-    expect(getReportText(result, "diagnostics")).toContain("Rider post-edit diagnostics")
-    expect(result.metadata?.files).toEqual([{ file: "src/App/Example.cs", status: "modified" }])
+    assert.deepEqual(result.content?.[0], { type: "text", text: "Edit succeeded" })
+    assert.equal(getReportText(result, "formatting"), `Rider post-edit formatting\n${diff}`)
+    assert.ok(getReportText(result, "diagnostics").includes("Rider post-edit diagnostics"))
+    assert.deepEqual(result.metadata?.files, [{ file: "src/App/Example.cs", status: "modified" }])
   })
 
   for (const state of ["unavailable", "denied", "failed"] as const) {
@@ -240,18 +241,18 @@ describe("post-edit hook", () => {
       const fixture = createFixture(repositoryRoot, { formatter: state })
       await fixture.run()
 
-      expect(fixture.event.status).toBe("completed")
-      expect(fixture.event.result.content?.[0]).toEqual({ type: "text", text: "Edit succeeded" })
-      expect(getReportText(fixture.event.result, "formatting")).toContain("Formatting did not complete")
-      expect(fixture.event.result.metadata).toMatchObject({
+      assert.equal(fixture.event.status, "completed")
+      assert.deepEqual(fixture.event.result.content?.[0], { type: "text", text: "Edit succeeded" })
+      assert.ok(getReportText(fixture.event.result, "formatting").includes("Formatting did not complete"))
+      assert.partialDeepStrictEqual(fixture.event.result.metadata, {
         riderPostEdit: {
           formatting: { status: "unavailable" },
           diagnostics: { status: "checked" },
         },
       })
-      expect(fixture.diagnosticRequests).toHaveLength(1)
+      assert.equal(fixture.diagnosticRequests.length, 1)
       if (state !== "failed") {
-        expect(fixture.formatRequests).toHaveLength(0)
+        assert.equal(fixture.formatRequests.length, 0)
       }
     })
   }
@@ -267,12 +268,12 @@ describe("post-edit hook", () => {
     fixture.setEditedFiles(paths)
     await fixture.run()
 
-    expect(fixture.formatRequests[0].files).toHaveLength(20)
-    expect(fixture.diagnosticRequests[0].files).toHaveLength(20)
-    expect(getReportText(fixture.event.result, "formatting"))
-      .toContain("1 additional file was not formatted")
-    expect(getReportText(fixture.event.result, "diagnostics"))
-      .toContain("1 additional file was not checked")
+    assert.equal(fixture.formatRequests[0].files.length, 20)
+    assert.equal(fixture.diagnosticRequests[0].files.length, 20)
+    assert.ok(getReportText(fixture.event.result, "formatting")
+      .includes("1 additional file was not formatted"))
+    assert.ok(getReportText(fixture.event.result, "diagnostics")
+      .includes("1 additional file was not checked"))
   })
 
   test("reports truncated diagnostics", async () => {
@@ -280,8 +281,8 @@ describe("post-edit hook", () => {
     await fixture.run()
 
     const report = getReportText(fixture.event.result, "diagnostics")
-    expect(report).toContain("Diagnostics truncated")
-    expect(report.length).toBeLessThan(13_000)
+    assert.ok(report.includes("Diagnostics truncated"))
+    assert.ok(report.length < 13_000)
   })
 
   test("reports truncated formatting output", async () => {
@@ -289,8 +290,8 @@ describe("post-edit hook", () => {
     await fixture.run()
 
     const report = getReportText(fixture.event.result, "formatting")
-    expect(report).toContain("Formatting output truncated. Run rider_reformat_file")
-    expect(report.length).toBeLessThan(13_000)
+    assert.ok(report.includes("Formatting output truncated. Run rider_reformat_file"))
+    assert.ok(report.length < 13_000)
   })
 
   for (const state of ["unavailable", "denied", "failed"] as const) {
@@ -298,9 +299,9 @@ describe("post-edit hook", () => {
       const fixture = createFixture(repositoryRoot, { diagnostics: state })
       await fixture.run()
 
-      expect(fixture.event.status).toBe("completed")
-      expect(fixture.event.result.content?.[0]).toEqual({ type: "text", text: "Edit succeeded" })
-      expect(fixture.event.result.metadata).toMatchObject({
+      assert.equal(fixture.event.status, "completed")
+      assert.deepEqual(fixture.event.result.content?.[0], { type: "text", text: "Edit succeeded" })
+      assert.partialDeepStrictEqual(fixture.event.result.metadata, {
         riderPostEdit: {
           status: "unavailable",
           formatting: { status: "formatted" },
@@ -308,7 +309,7 @@ describe("post-edit hook", () => {
         },
       })
       if (state === "denied") {
-        expect(fixture.diagnosticRequests).toHaveLength(0)
+        assert.equal(fixture.diagnosticRequests.length, 0)
       }
     })
   }
@@ -317,9 +318,9 @@ describe("post-edit hook", () => {
     const fixture = createFixture(repositoryRoot, { formatter: "denied", diagnostics: "denied" })
     await fixture.run()
 
-    expect(fixture.formatRequests).toHaveLength(0)
-    expect(fixture.diagnosticRequests).toHaveLength(0)
-    expect(fixture.event.status).toBe("completed")
+    assert.equal(fixture.formatRequests.length, 0)
+    assert.equal(fixture.diagnosticRequests.length, 0)
+    assert.equal(fixture.event.status, "completed")
   })
 
   test("ignores failed edits, unrelated tools, and unsupported files", async () => {
@@ -337,8 +338,8 @@ describe("post-edit hook", () => {
 
     for (const fixture of [failedEdit, formatterCall, diagnosticsCall, unsupportedFile]) {
       await fixture.run()
-      expect(fixture.formatRequests).toHaveLength(0)
-      expect(fixture.diagnosticRequests).toHaveLength(0)
+      assert.equal(fixture.formatRequests.length, 0)
+      assert.equal(fixture.diagnosticRequests.length, 0)
     }
   })
 
@@ -348,7 +349,7 @@ describe("post-edit hook", () => {
     fixture.setEditedFiles([join(repositoryRoot, "src/App/Example.cs")])
     await fixture.run()
 
-    expect(fixture.formatRequests).toHaveLength(0)
-    expect(fixture.diagnosticRequests).toHaveLength(0)
+    assert.equal(fixture.formatRequests.length, 0)
+    assert.equal(fixture.diagnosticRequests.length, 0)
   })
 })

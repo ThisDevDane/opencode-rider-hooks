@@ -66,6 +66,6 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
 }
 
 export default Plugin.define({
-  id: "local.rider-post-edit",
+  id: "opencode-rider-hooks",
   setup: plugin => register(plugin, plugin.location.project.canonical),
 })
