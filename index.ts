@@ -1,19 +1,31 @@
 import { realpath } from "node:fs/promises"
-import { Plugin } from "@opencode/plugin"
+import { Plugin, type Mcp } from "@opencode/plugin"
 import { changedPaths, isCSharpFile, isInsideDirectory, sourceFiles } from "./files.ts"
 import { configuredProjectPath, projectDirectory } from "./projects.ts"
 import { appendReport, errorMessage, hasRiderTools, runRiderStep, type RiderRun } from "./rider.ts"
+import { riderStatus } from "./status.ts"
 
 const MAX_FILES_PER_EDIT = 20
 
 export async function register(plugin: Plugin.Context, repositoryRoot: string) {
   const checkoutRoot = await realpath(repositoryRoot)
   const lifetime = new AbortController()
-  let projectPath: string | undefined
+  let riderServer: Mcp.ServerConfig | undefined
 
   // Read OpenCode's merged MCP configuration without parsing configuration files.
   await plugin.mcp.transform(editor => {
-    projectPath = configuredProjectPath(editor.get("rider"))
+    riderServer = editor.get("rider")
+  })
+
+  await plugin.command.transform(editor => {
+    editor.add({
+      name: "rider-status",
+      description: "Check Rider hooks setup and MCP availability without changing files",
+      async execute({ sessionID, delivery }) {
+        const text = await riderStatus(plugin, sessionID, checkoutRoot, riderServer)
+        await plugin.session.synthetic({ sessionID, text, delivery, resume: false })
+      },
+    })
   })
 
   await plugin.tool.hook("execute.after", async event => {
@@ -39,7 +51,7 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
         return
       }
 
-      const selector = projectPath
+      const selector = configuredProjectPath(riderServer)
       const root = selector ? await projectDirectory(selector, checkoutRoot) : checkoutRoot
       files = (await sourceFiles(paths, workingDirectory, checkoutRoot))
         .filter(file => isInsideDirectory(root, file))

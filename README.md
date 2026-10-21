@@ -18,11 +18,24 @@ Add the plugin to your project's `opencode.jsonc`:
 Keep your solution open in Rider and connect a `rider` MCP server that exposes
 `rider_reformat_file` and `rider_lint_files`. No `src` directory is required.
 
-Run `opencode plugin list` to verify loading and use `/mcps` to check the Rider
-connection.
+Run `/rider-status` to check the setup. If the command is missing, run
+`opencode plugin list` to verify loading. Use `/mcps` to manage the Rider connection.
 
 To disable the plugin, append `"-opencode-rider-hooks"` to the `plugins` array in
 your project's `opencode.jsonc`.
+
+## Check the setup
+
+`/rider-status` reports whether the plugin is loaded, the session is in this
+checkout, the `rider` MCP server is configured and connected, and both required
+tools are available. It also validates a configured project selector, or reports
+automatic project selection when none is set. Each invocation reads the current
+connection state and tool catalog.
+
+The command adds its report to the session without starting a model response.
+It does not execute Rider tools, change files, request permissions, or run tests.
+An available tool does not prove permission is granted or that Rider can match an
+open project. Those checks happen on the next eligible C# edit.
 
 ## Project selection
 

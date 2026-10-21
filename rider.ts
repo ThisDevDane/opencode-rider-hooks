@@ -20,6 +20,8 @@ const STEPS = {
   },
 } as const
 
+export const RIDER_TOOL_NAMES = Object.values(STEPS).map(step => step.toolName)
+
 export type StepName = keyof typeof STEPS
 type ReportStatus = "formatted" | "checked" | "unavailable"
 
@@ -41,7 +43,7 @@ export interface RiderRun {
 }
 
 export function hasRiderTools(tools: RiderRun["tools"]): boolean {
-  return Object.values(STEPS).some(step => tools.some(tool => tool.id === step.toolName))
+  return RIDER_TOOL_NAMES.some(name => tools.some(tool => tool.id === name))
 }
 
 export function errorMessage(error: unknown): string {

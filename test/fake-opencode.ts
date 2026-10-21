@@ -1,4 +1,5 @@
 import type { Mcp, Plugin } from "@opencode/plugin"
+import type { CommandDefinition, CommandInvocation } from "@opencode/plugin/promise/command"
 import type { Result } from "@opencode/plugin/promise/tool"
 import { register } from "../index.ts"
 import type { StepName } from "../rider.ts"
@@ -8,6 +9,9 @@ export type ToolState = "available" | "unavailable" | "denied" | "failed"
 interface FixtureOptions {
   workingDirectory?: string
   mcpServer?: Mcp.ServerConfig
+  mcpStatus?: Mcp.Status
+  omitMcpStatus?: boolean
+  lookupErrors?: { session?: string; mcp?: string; tools?: string }
   projectErrors?: Record<string, string>
   formatter?: ToolState
   diagnostics?: ToolState
@@ -37,9 +41,13 @@ interface TestEvent {
 }
 
 type AfterEditHook = (event: TestEvent) => Promise<void>
+type SyntheticRequest = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
 export function createFixture(repositoryRoot: string, options: FixtureOptions = {}) {
   let afterEdit: AfterEditHook | undefined
+  let mcpTransform: (() => void) | undefined
+  let mcpServer = options.mcpServer
+  let mcpStatus: Mcp.Status = options.mcpStatus ?? { status: mcpServer?.disabled ? "disabled" : "connected" }
   let formatterState = options.formatter
   let diagnosticsState = options.diagnostics
   const formatRequests: FormatRequest[] = []
@@ -47,6 +55,8 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   const permissionActions: string[] = []
   const executionOrder: string[] = []
   const lookupCounts = { tools: 0, sessions: 0 }
+  const commands = new Map<string, CommandDefinition>()
+  const syntheticMessages: SyntheticRequest[] = []
 
   function checkProject(input: FormatRequest) {
     const error = input.projectPath && options.projectErrors?.[input.projectPath]
@@ -89,20 +99,40 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   const plugin = {
     mcp: {
       async transform(callback: (editor: { get(name: string): Mcp.ServerConfig | undefined }) => void) {
-        callback({
+        mcpTransform = () => callback({
           get(name) {
             if (name !== "rider") {
               throw new Error(`Unexpected MCP server: ${name}`)
             }
-            return options.mcpServer
+            return mcpServer
           },
         })
+        mcpTransform()
+      },
+      async list() {
+        if (options.lookupErrors?.mcp) {
+          throw new Error(options.lookupErrors.mcp)
+        }
+        return {
+          data: mcpServer && !options.omitMcpStatus ? [{ name: "rider", status: mcpStatus }] : [],
+        }
+      },
+    },
+    command: {
+      async transform(callback: (editor: { add(command: CommandDefinition): void }) => void) {
+        callback({ add: command => { commands.set(command.name, command) } })
       },
     },
     session: {
       async get() {
         lookupCounts.sessions++
+        if (options.lookupErrors?.session) {
+          throw new Error(options.lookupErrors.session)
+        }
         return { location: { directory: options.workingDirectory ?? repositoryRoot } }
+      },
+      async synthetic(request: SyntheticRequest) {
+        syntheticMessages.push(request)
       },
     },
     tool: {
@@ -114,6 +144,9 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
       },
       async list() {
         lookupCounts.tools++
+        if (options.lookupErrors?.tools) {
+          throw new Error(options.lookupErrors.tools)
+        }
         const tools = []
         if (formatterState !== "unavailable") {
           tools.push(formatter)
@@ -159,6 +192,17 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
         }
         await afterEdit(event)
       },
+      async runCommand(delivery: CommandInvocation["delivery"] = "steer") {
+        const command = commands.get("rider-status")
+        if (!command) {
+          throw new Error("Rider status command was not registered")
+        }
+        await command.execute({
+          sessionID: event.sessionID as CommandInvocation["sessionID"],
+          prompt: { text: "" },
+          delivery,
+        })
+      },
       cleanup,
     }
   }
@@ -170,7 +214,14 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
     permissionActions,
     executionOrder,
     lookupCounts,
+    commands,
+    syntheticMessages,
     start,
+    setMcpServer(server: Mcp.ServerConfig | undefined, status: Mcp.Status = { status: "connected" }) {
+      mcpServer = server
+      mcpStatus = status
+      mcpTransform?.()
+    },
     setToolStates(formatter: ToolState, diagnostics: ToolState) {
       formatterState = formatter
       diagnosticsState = diagnostics
