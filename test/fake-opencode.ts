@@ -41,6 +41,7 @@ interface TestEvent {
 }
 
 type AfterEditHook = (event: TestEvent) => Promise<void>
+type PromptRequest = Parameters<Plugin.Context["session"]["prompt"]>[0]
 type SyntheticRequest = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 
 export function createFixture(repositoryRoot: string, options: FixtureOptions = {}) {
@@ -56,6 +57,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   const executionOrder: string[] = []
   const lookupCounts = { tools: 0, sessions: 0 }
   const commands = new Map<string, CommandDefinition>()
+  const prompts: PromptRequest[] = []
   const syntheticMessages: SyntheticRequest[] = []
 
   function checkProject(input: FormatRequest) {
@@ -134,6 +136,9 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
       async synthetic(request: SyntheticRequest) {
         syntheticMessages.push(request)
       },
+      async prompt(request: PromptRequest) {
+        prompts.push(request)
+      },
     },
     tool: {
       async hook(name: string, callback: AfterEditHook) {
@@ -192,14 +197,17 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
         }
         await afterEdit(event)
       },
-      async runCommand(delivery: CommandInvocation["delivery"] = "steer") {
+      async runCommand(
+        delivery: CommandInvocation["delivery"] = "steer",
+        prompt: CommandInvocation["prompt"] = { text: "" },
+      ) {
         const command = commands.get("rider-status")
         if (!command) {
           throw new Error("Rider status command was not registered")
         }
         await command.execute({
           sessionID: event.sessionID as CommandInvocation["sessionID"],
-          prompt: { text: "" },
+          prompt,
           delivery,
         })
       },
@@ -215,6 +223,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
     executionOrder,
     lookupCounts,
     commands,
+    prompts,
     syntheticMessages,
     start,
     setMcpServer(server: Mcp.ServerConfig | undefined, status: Mcp.Status = { status: "connected" }) {

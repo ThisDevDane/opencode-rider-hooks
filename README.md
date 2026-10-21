@@ -32,10 +32,15 @@ tools are available. It also validates a configured project selector, or reports
 automatic project selection when none is set. Each invocation reads the current
 connection state and tool catalog.
 
-The command adds its report to the session without starting a model response.
-It does not execute Rider tools, change files, request permissions, or run tests.
-An available tool does not prove permission is granted or that Rider can match an
-open project. Those checks happen on the next eligible C# edit.
+The command submits the collected report as a normal prompt so the session's
+selected model can display it in an assistant reply. It requires a working model
+connection and uses model tokens. The assistant is instructed to present the
+report without calling tools or performing additional checks.
+
+The setup check itself does not execute Rider tools, change files, request
+permissions, or run tests. An available tool does not prove permission is granted
+or that Rider can match an open project. Those checks happen on the next eligible
+C# edit.
 
 ## Project selection
 
