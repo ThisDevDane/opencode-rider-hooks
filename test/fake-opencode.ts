@@ -1,13 +1,14 @@
 import type { Mcp, Plugin } from "@opencode/plugin"
 import type { CommandDefinition, CommandInvocation } from "@opencode/plugin/promise/command"
 import type { Result } from "@opencode/plugin/promise/tool"
-import { register } from "../index.ts"
+import riderHooks from "../index.ts"
 import type { StepName } from "../rider.ts"
 
 export type ToolState = "available" | "unavailable" | "denied" | "failed"
 
 interface FixtureOptions {
   workingDirectory?: string
+  canonicalRoot?: string
   mcpServer?: Mcp.ServerConfig
   mcpStatus?: Mcp.Status
   omitMcpStatus?: boolean
@@ -104,6 +105,13 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   // Only implement the OpenCode methods this plugin uses. Keep the cast here,
   // rather than weakening the event and request types throughout the tests.
   const plugin = {
+    location: {
+      directory: options.workingDirectory ?? repositoryRoot,
+      project: {
+        directory: repositoryRoot,
+        canonical: options.canonicalRoot ?? repositoryRoot,
+      },
+    },
     mcp: {
       async transform(callback: (editor: { get(name: string): Mcp.ServerConfig | undefined }) => void) {
         mcpTransform = () => callback({
@@ -194,7 +202,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   }
 
   async function start() {
-    const cleanup = await register(plugin, repositoryRoot)
+    const cleanup = await riderHooks.setup(plugin)
     return {
       async run() {
         if (!afterEdit) {
@@ -216,7 +224,7 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
           delivery,
         })
       },
-      cleanup,
+      cleanup: () => cleanup?.(),
     }
   }
 

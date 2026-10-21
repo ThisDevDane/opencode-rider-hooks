@@ -84,6 +84,40 @@ describe("Rider status command", () => {
     assert.deepEqual(fixture.lookupCounts, { tools: 1, sessions: 1 })
   })
 
+  test("reports the current worktree checkout rather than the canonical checkout", async () => {
+    const canonicalRoot = join(repositoryRoot, "main")
+    const worktreeRoot = join(repositoryRoot, "feature")
+    const directory = join(worktreeRoot, "App")
+    await mkdir(canonicalRoot)
+    await mkdir(directory, { recursive: true })
+    const fixture = createFixture(worktreeRoot, { canonicalRoot, workingDirectory: directory, mcpServer: server })
+    const hook = await fixture.start()
+    try {
+      await hook.runCommand()
+      const text = fixture.prompts[0].text
+      assert.ok(text.includes(`Checkout: ${worktreeRoot}`))
+      assert.ok(text.includes(`Session directory: ${directory}`))
+      assert.match(text, /Project selection: automatic/)
+      assert.match(text, /Setup: ready for post-edit checks/)
+      assert.doesNotMatch(text, /Session is outside this checkout/)
+
+      fixture.setMcpServer({ ...server, headers: { IJ_MCP_SERVER_PROJECT_PATH: worktreeRoot } })
+      await hook.runCommand()
+      assert.ok(fixture.prompts[1].text.includes(`Project directory: ${worktreeRoot}`))
+      assert.match(fixture.prompts[1].text, /Setup: ready for post-edit checks/)
+
+      fixture.setMcpServer({ ...server, headers: { IJ_MCP_SERVER_PROJECT_PATH: canonicalRoot } })
+      await hook.runCommand()
+      assert.match(fixture.prompts[2].text, /Project selector is invalid: .*points outside this checkout/)
+      assert.match(fixture.prompts[2].text, /Setup: needs attention/)
+      assert.deepEqual(fixture.formatRequests, [])
+      assert.deepEqual(fixture.diagnosticRequests, [])
+      assert.deepEqual(fixture.permissionActions, [])
+    } finally {
+      hook.cleanup()
+    }
+  })
+
   test("reports missing MCP configuration even if the tool names exist", async () => {
     const { text } = await checkStatus()
 

@@ -269,6 +269,88 @@ describe("post-edit hook", () => {
     assert.equal(fixture.diagnosticRequests.length, 1)
   })
 
+  test("routes sibling worktree edits without using the canonical checkout as the boundary", async () => {
+    const canonicalRoot = join(repositoryRoot, "main")
+    const worktreeRoot = join(repositoryRoot, "feature")
+    await createFile("main/App/Example.cs")
+    await createFile("feature/App/Example.cs")
+    await createFile("feature/Shared.cs")
+    const files = [join(worktreeRoot, "App/Example.cs"), join(worktreeRoot, "Shared.cs")]
+    const fixture = createFixture(worktreeRoot, {
+      canonicalRoot,
+      workingDirectory: join(worktreeRoot, "App"),
+    })
+    fixture.setEditedFiles(["Example.cs", "../Shared.cs", files[0]])
+    await fixture.run()
+
+    const requests = files.map(file => ({ files: [file], projectPath: file }))
+    assert.deepEqual(fixture.formatRequests, requests)
+    assert.deepEqual(fixture.diagnosticRequests, requests.map(request => ({
+      ...request, min_severity: "warning", timeout: 10_000,
+    })))
+  })
+
+  test("keeps worktree routing isolated from the canonical checkout and other worktrees", async () => {
+    const canonicalRoot = join(repositoryRoot, "main")
+    await createFile("main/Example.cs")
+    await createFile("feature/Example.cs")
+    await createFile("other/Example.cs")
+
+    for (const name of ["feature", "other"]) {
+      const worktreeRoot = join(repositoryRoot, name)
+      const file = join(worktreeRoot, "Example.cs")
+      const otherFile = join(repositoryRoot, name === "feature" ? "other" : "feature", "Example.cs")
+      await symlink(join(canonicalRoot, "Example.cs"), join(worktreeRoot, "Link.cs"))
+      const fixture = createFixture(worktreeRoot, { canonicalRoot })
+      fixture.setEditedFiles(["Example.cs", join(canonicalRoot, "Example.cs"), otherFile, "Link.cs"])
+      await fixture.run()
+
+      assert.deepEqual(fixture.formatRequests, [{ files: [file], projectPath: file }])
+      assert.partialDeepStrictEqual(fixture.diagnosticRequests, [{ files: [file], projectPath: file }])
+    }
+  })
+
+  test("uses a configured worktree selector without overriding it", async () => {
+    await createFile("main/Example.cs")
+    await createFile("feature/Example.cs")
+    const worktreeRoot = join(repositoryRoot, "feature")
+    const fixture = createFixture(worktreeRoot, {
+      canonicalRoot: join(repositoryRoot, "main"),
+      mcpServer: {
+        type: "remote",
+        url: "http://localhost:64342/stream",
+        headers: { IJ_MCP_SERVER_PROJECT_PATH: worktreeRoot },
+      },
+    })
+    fixture.setEditedFiles(["Example.cs"])
+    await fixture.run()
+
+    const files = [join(worktreeRoot, "Example.cs")]
+    assert.deepEqual(fixture.formatRequests, [{ files }])
+    assert.deepEqual(fixture.diagnosticRequests, [{ files, min_severity: "warning", timeout: 10_000 }])
+  })
+
+  test("does not remap a canonical-checkout selector for a worktree session", async () => {
+    await createFile("main/Example.cs")
+    await createFile("feature/Example.cs")
+    const canonicalRoot = join(repositoryRoot, "main")
+    const fixture = createFixture(join(repositoryRoot, "feature"), {
+      canonicalRoot,
+      mcpServer: {
+        type: "remote",
+        url: "http://localhost:64342/stream",
+        headers: { IJ_MCP_SERVER_PROJECT_PATH: canonicalRoot },
+      },
+    })
+    fixture.setEditedFiles(["Example.cs"])
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [])
+    assert.deepEqual(fixture.diagnosticRequests, [])
+    assert.deepEqual(fixture.permissionActions, [])
+    assert.match(getReportText(fixture.event.result, "diagnostics"), /points outside this checkout/)
+  })
+
   test("rejects file symlinks that escape the checkout during unscoped routing", async () => {
     const otherRoot = await mkdtemp(join(dirname(repositoryRoot), "rider-other-"))
     try {

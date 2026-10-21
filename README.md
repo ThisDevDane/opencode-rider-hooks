@@ -45,8 +45,8 @@ C# edit.
 ## Project selection
 
 Paths resolve against the session's working directory and are sent to Rider as
-canonical absolute paths. Other checkouts, deleted files, generated C# files,
-`bin`, and `obj` are excluded.
+canonical absolute paths. Files outside the current checkout, deleted files,
+generated C# files, `bin`, and `obj` are excluded.
 
 The plugin reads the effective configuration of the MCP server named `rider`.
 It uses `IJ_MCP_SERVER_PROJECT_PATH` when present, from HTTP `headers` or the
@@ -91,14 +91,29 @@ This avoids assuming the matched Rider project's base directory equals the
 checkout or the session directory. Project matching follows
 [Rider's resolver](https://github.com/JetBrains/intellij-community/blob/master/plugins/mcp-server/src/com/intellij/mcpserver/impl/McpSessionProjectResolverImpl.kt).
 
+## Worktrees
+
+The plugin uses OpenCode's current checkout root, not the project's shared
+canonical checkout. Sessions in linked worktrees, including nested session
+directories, use that worktree's files for formatting and diagnostics.
+
+Open the worktree's solution or project in Rider. Opening only the main checkout's
+solution does not cover its worktrees, and the plugin never opens projects itself.
+
+Without `IJ_MCP_SERVER_PROJECT_PATH`, each request supplies the changed file's
+absolute path as `projectPath`, so Rider can select the matching open project.
+If the variable is configured, it must point inside the current worktree. A selector
+for the main checkout or another worktree is rejected rather than remapped or
+overridden.
+
 ## What to expect
 
 The hook checks Rider tool availability on every eligible edit, before resolving
 the session or edited file paths. If neither tool is available, it leaves the edit
 result unchanged. Connecting Rider later takes effect on the next edit.
 
-- Only changed C# files in this checkout are processed, up to 20 per edit. Generated
-  files, `bin`, `obj`, and other checkouts are excluded.
+- Only changed C# files in the current checkout are processed, up to 20 per edit.
+  Generated files, `bin`, `obj`, and files outside that checkout are excluded.
 - Formatting follows Rider's settings and `.editorconfig`. It can change the
   whole file, not just edited lines.
 - Formatting and diagnostics require separate permissions. Failures leave the

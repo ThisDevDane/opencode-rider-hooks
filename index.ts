@@ -105,5 +105,6 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
 
 export default Plugin.define({
   id: "opencode-rider-hooks",
-  setup: plugin => register(plugin, plugin.location.project.canonical),
+  // Linked worktrees share a canonical project but have their own checkout root.
+  setup: plugin => register(plugin, plugin.location.project.directory),
 })
