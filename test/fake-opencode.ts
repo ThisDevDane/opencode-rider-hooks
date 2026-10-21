@@ -16,6 +16,7 @@ interface FixtureOptions {
   formatter?: ToolState
   diagnostics?: ToolState
   formatterOutput?: string
+  formatterErrors?: string[]
   diagnosticOutput?: string
 }
 
@@ -76,6 +77,10 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
       checkProject(input)
       if (formatterState === "failed") {
         throw new Error("Rider formatter failed")
+      }
+      const error = options.formatterErrors?.[formatRequests.length - 1]
+      if (error) {
+        throw new Error(error)
       }
       executionOrder.push("formatting completed")
       return { content: options.formatterOutput ?? "ok" }

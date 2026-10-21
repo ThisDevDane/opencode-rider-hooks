@@ -489,6 +489,39 @@ describe("post-edit hook", () => {
     assert.deepEqual(result.metadata?.files, [{ file: "src/App/Example.cs", status: "modified" }])
   })
 
+  test("retries solution-model rejection of a newly added file before diagnostics", async () => {
+    await createFile("src/App/New.cs", "class New {}")
+    const fixture = createFixture(repositoryRoot, {
+      formatterErrors: ["Requested files are not part of the current solution."],
+      formatterOutput: "formatter diff",
+    })
+    const file = join(repositoryRoot, "src/App/New.cs")
+    fixture.event.result = {
+      ...fixture.event.result,
+      metadata: { files: [{ file, status: "added" }] },
+    }
+    await fixture.run()
+
+    assert.deepEqual(fixture.formatRequests, [
+      { files: [file], projectPath: file },
+      { files: [file], projectPath: file },
+    ])
+    assert.deepEqual(fixture.executionOrder, [
+      "formatting started", "formatting started", "formatting completed", "diagnostics",
+    ])
+    assert.deepEqual(fixture.permissionActions, ["rider_reformat_file", "rider_lint_files"])
+    assert.deepEqual(fixture.event.result.content?.[0], { type: "text", text: "Edit succeeded" })
+    assert.ok(getReportText(fixture.event.result, "formatting").includes("succeeded after 1 retry"))
+    assert.ok(getReportText(fixture.event.result, "formatting").includes("formatter diff"))
+    assert.partialDeepStrictEqual(fixture.event.result.metadata, {
+      files: [{ file, status: "added" }],
+      riderPostEdit: {
+        formatting: { status: "formatted" },
+        diagnostics: { status: "checked" },
+      },
+    })
+  })
+
   for (const state of ["unavailable", "denied", "failed"] as const) {
     test(`still runs diagnostics when formatting is ${state}`, async () => {
       const fixture = createFixture(repositoryRoot, { formatter: state })

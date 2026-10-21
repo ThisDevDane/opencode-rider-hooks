@@ -103,13 +103,18 @@ result unchanged. Connecting Rider later takes effect on the next edit.
   whole file, not just edited lines.
 - Formatting and diagnostics require separate permissions. Failures leave the
   original edit intact, and diagnostics still run if formatting fails.
+- New files may reach Rider before its solution model updates. If formatting
+  rejects them with "Requested files are not part of the current solution.", the
+  plugin retries after 250 ms, 500 ms, 1 second, and 2 seconds. Successful retries
+  are noted in the report. If rejection persists, check that the files are included
+  in the open solution. Other errors and timeouts are not retried.
 - No builds run. Shell edits and Rider tool calls don't trigger the hook.
 
 All formatting finishes before diagnostics start. Each step has one permission
-check and a 15-second deadline shared across its file requests, excluding
-permission prompts. Each step's combined output is capped at 12,000 characters.
-Skipped files and truncated output are reported. Formatting and diagnostic
-statuses are recorded separately in the tool-result metadata. Rider's own
+check and a 15-second deadline shared across its file requests and retry waits,
+excluding permission prompts. Each step's combined output is capped at 12,000
+characters. Skipped files and truncated output are reported. Formatting and
+diagnostic statuses are recorded separately in the tool-result metadata. Rider's own
 partial-result and timeout flags remain in its output.
 
 Inspect files before retrying a timed-out format, since Rider may already have

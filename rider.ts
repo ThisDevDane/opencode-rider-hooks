@@ -1,9 +1,12 @@
+import timers from "node:timers/promises"
 import type { Plugin } from "@opencode/plugin"
 import type { Info, Result, ToolContext } from "@opencode/plugin/promise/tool"
 
 const OPERATION_TIMEOUT_MS = 15_000
 const ANALYSIS_TIMEOUT_MS = 10_000
 const MAX_REPORT_CHARACTERS = 12_000
+const SOLUTION_RETRY_DELAYS_MS = [250, 500, 1000, 2000]
+const SOLUTION_MEMBERSHIP_ERROR = "Requested files are not part of the current solution."
 
 const STEPS = {
   formatting: {
@@ -155,6 +158,36 @@ export async function withDeadline<T>(
   }
 }
 
+async function executeRequest(
+  tool: RiderRun["tools"][number],
+  input: unknown,
+  context: ToolContext,
+  stepName: StepName,
+): Promise<{ result: Result; retries: number }> {
+  let retries = 0
+  while (true) {
+    context.signal.throwIfAborted()
+    try {
+      return { result: await tool.execute(input, context), retries }
+    } catch (error) {
+      context.signal.throwIfAborted()
+      // New disk files can reach Rider before its solution model catches up.
+      // Only retry this rejection, never an uncertain or timed-out format.
+      if (stepName !== "formatting" || !errorMessage(error).includes(SOLUTION_MEMBERSHIP_ERROR)) {
+        throw error
+      }
+
+      const milliseconds = SOLUTION_RETRY_DELAYS_MS[retries]
+      if (milliseconds === undefined) {
+        throw new Error(`${errorMessage(error)} Still rejected after ${retries} retries. Check that the files are included in the open Rider solution.`)
+      }
+
+      await timers.setTimeout(milliseconds, undefined, { signal: context.signal })
+      retries++
+    }
+  }
+}
+
 export async function runRiderStep(
   originalResult: Result,
   stepName: StepName,
@@ -194,12 +227,15 @@ export async function runRiderStep(
           : { ...request, min_severity: "warning", timeout: ANALYSIS_TIMEOUT_MS }
 
         try {
-          const result = await tool.execute(input, {
+          const { result, retries } = await executeRequest(tool, input, {
             ...run.call,
             signal,
             progress: async () => {},
-          })
+          }, stepName)
           signal.throwIfAborted()
+          if (retries > 0) {
+            texts.push(`Rider initially rejected ${request.files.join(", ")} as outside the current solution; formatting succeeded after ${retries} ${retries === 1 ? "retry" : "retries"}.`)
+          }
           texts.push(reportText(result, stepName))
         } catch (error) {
           signal.throwIfAborted()
