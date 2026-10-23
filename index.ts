@@ -2,13 +2,16 @@ import { realpath } from "node:fs/promises"
 import { Plugin, type Mcp } from "@opencode/plugin"
 import { changedPaths, isCSharpFile, isInsideDirectory, sourceFiles } from "./files.ts"
 import { configuredProjectPath, projectDirectory } from "./projects.ts"
+import { registerWorktreeOpening } from "./opening.ts"
 import { appendReport, errorMessage, hasRiderTools, runRiderStep, type RiderRun } from "./rider.ts"
 import { riderStatus } from "./status.ts"
+import { launchRider, worktreeConflict, worktreeOptions } from "./worktrees.ts"
 
 const MAX_FILES_PER_EDIT = 20
 
-export async function register(plugin: Plugin.Context, repositoryRoot: string) {
+export async function register(plugin: Plugin.Context, repositoryRoot: string, launch = launchRider) {
   const checkoutRoot = await realpath(repositoryRoot)
+  const options = worktreeOptions(plugin.options)
   const lifetime = new AbortController()
   let riderServer: Mcp.ServerConfig | undefined
 
@@ -17,17 +20,20 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
     riderServer = editor.get("rider")
   })
 
+  const opening = await registerWorktreeOpening(plugin, checkoutRoot, options, () => riderServer, lifetime.signal, launch)
+
   await plugin.command.transform(editor => {
     editor.add({
       name: "rider-status",
       description: "Check Rider hooks setup and MCP availability without changing files",
       async execute({ sessionID, prompt, delivery }) {
-        const text = await riderStatus(plugin, sessionID, checkoutRoot, riderServer)
+        const text = await riderStatus(plugin, sessionID, checkoutRoot, riderServer, opening)
         // Synthetic input with resume: false stays in the inbox without a reply.
         await plugin.session.prompt({
           ...prompt,
           sessionID,
           delivery,
+          metadata: { riderStatus: true },
           text: [
             "Display the following Rider hooks status report to the user, preserving its findings and limitations.",
             "Do not call tools, run tests, change files, or perform additional checks.",
@@ -56,6 +62,9 @@ export async function register(plugin: Plugin.Context, repositoryRoot: string) {
       if (!hasRiderTools(tools)) {
         return
       }
+
+      const conflict = worktreeConflict(options, riderServer)
+      if (conflict) throw new Error(conflict)
 
       const session = await plugin.session.get({ sessionID: event.sessionID })
       const workingDirectory = await realpath(session.location.directory)

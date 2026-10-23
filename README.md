@@ -2,7 +2,8 @@
 
 Formats changed C# files with Rider and reports diagnostics after OpenCode V2's
 `write`, `edit`, and `patch` tools finish. Formatter diffs and diagnostics appear
-in the edit's tool result.
+in the edit's tool result. It can optionally launch Rider for linked worktree
+sessions on macOS and Windows.
 
 ## Setup
 
@@ -29,16 +30,17 @@ your project's `opencode.jsonc`.
 `/rider-status` reports whether the plugin is loaded, the session is in this
 checkout, the `rider` MCP server is configured and connected, and both required
 tools are available. It also validates a configured project selector, or reports
-automatic project selection when none is set. Each invocation reads the current
-connection state and tool catalog.
+automatic project selection when none is set. It also reports worktree auto-open
+status and configuration conflicts. Each invocation reads the current connection
+state and tool catalog.
 
 The command submits the collected report as a normal prompt so the session's
 selected model can display it in an assistant reply. It requires a working model
 connection and uses model tokens. The assistant is instructed to present the
 report without calling tools or performing additional checks.
 
-The setup check itself does not execute Rider tools, change files, request
-permissions, or run tests. An available tool does not prove permission is granted
+The setup check itself does not launch Rider, execute Rider tools, change files,
+request permissions, or run tests. An available tool does not prove permission is granted
 or that Rider can match an open project. Those checks happen on the next eligible
 C# edit.
 
@@ -83,7 +85,8 @@ then selects the open project containing that path, preferring the most specific
 matching directory. This supports monorepos, `.sln`, `.slnx`, standalone `.csproj`
 projects, and nested sessions without scanning solution files or guessing which
 project is open. Unresolved or ambiguous matches produce Rider's error in the
-report; other files still run. The plugin never opens projects itself.
+report; other files still run. Projects must already be open unless worktree
+auto-open is enabled below.
 
 Both formatting and linting accept absolute file paths in the current
 [JetBrains implementation](https://github.com/JetBrains/intellij-community/blob/master/plugins/mcp-server/mcpserver.toolsets/src/general/RequestPathValidationSupport.kt).
@@ -97,14 +100,99 @@ The plugin uses OpenCode's current checkout root, not the project's shared
 canonical checkout. Sessions in linked worktrees, including nested session
 directories, use that worktree's files for formatting and diagnostics.
 
-Open the worktree's solution or project in Rider. Opening only the main checkout's
-solution does not cover its worktrees, and the plugin never opens projects itself.
+By default, open the worktree's solution or project in Rider yourself. Opening only
+the main checkout's solution does not cover its worktrees.
 
 Without `IJ_MCP_SERVER_PROJECT_PATH`, each request supplies the changed file's
 absolute path as `projectPath`, so Rider can select the matching open project.
 If the variable is configured, it must point inside the current worktree. A selector
 for the main checkout or another worktree is rejected rather than remapped or
 overridden.
+
+### Automatically open Rider
+
+Opt in with plugin options:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "github:ThisDevDane/opencode-rider-hooks",
+      "options": {
+        "openWorktrees": true
+      }
+    }
+  ]
+}
+```
+
+`openWorktrees` defaults to `false`. When enabled, the plugin requests a Rider
+launch when a top-level session is created, moved, viewed, or first prompted in a
+linked worktree. It also checks existing sessions in that checkout when the plugin
+loads, covering sessions opened before event subscription. Each plugin instance
+ignores sessions outside its checkout and child sessions. The canonical checkout
+never triggers auto-open. Creating a worktree without opening a session there
+does not launch Rider.
+
+Launches are deduplicated by target path across plugin instances for the lifetime
+of the OpenCode service. Closing Rider does not clear that record; reopen it
+manually or restart the service. A failed launch is not retried on every event.
+Reload the plugin to retry after fixing the launcher.
+
+**`openWorktrees` and `IJ_MCP_SERVER_PROJECT_PATH` are mutually exclusive.** Remove
+the project-path header from the `rider` MCP server before enabling auto-open.
+This also applies to an effective stdio environment selector, including an
+inherited value. If both are enabled, no Rider launch or post-edit tool calls run.
+`/rider-status` and eligible edit reports explain the conflict. The plugin never
+removes, remaps, or overrides the selector. Ordinary selector behavior is unchanged
+when auto-open is disabled.
+
+By default, Rider receives the worktree root directory. For a solution or project
+inside a subdirectory, set `worktreeProject`, relative to each worktree root:
+
+```jsonc
+"options": {
+  "openWorktrees": true,
+  "worktreeProject": "backend/App.slnx"
+}
+```
+
+The target must exist and stay inside the worktree, including after symlink
+resolution. Directories, `.sln`, `.slnx`, `.csproj`, `.fsproj`, and `.vbproj` files
+are supported. Absolute paths and paths into another checkout are rejected.
+
+On macOS, the default launcher is `open -a Rider`. On Windows, `rider64.exe` must
+be on the OpenCode service's `PATH`. Set `riderCommand` to an argument array if
+your application has a versioned name or the executable is elsewhere:
+
+macOS example:
+
+```jsonc
+"riderCommand": ["/usr/bin/open", "-a", "Rider 2026.2.app"]
+```
+
+Windows example:
+
+```jsonc
+"riderCommand": ["C:\\Program Files\\JetBrains\\JetBrains Rider\\bin\\rider64.exe"]
+```
+
+The plugin appends the absolute target as one argument. It does not use a shell,
+so paths with spaces need no extra quoting. Use an executable, not a Windows
+`.bat` or `.cmd` launcher. See [Rider's command-line setup](https://www.jetbrains.com/help/rider/Working_with_the_IDE_Features_from_Command_Line.html).
+
+OpenCode's service must run on the desktop machine with access to Rider and the
+same worktree paths. WSL, containers, and remote services need a separate host
+bridge; the plugin does not provide one. Other operating systems require an
+explicit `riderCommand`.
+
+Launching is best-effort and does not wait for Rider to load the project or for
+MCP to connect. Launch requests have a five-second deadline; Rider is not killed
+when the plugin unloads. Formatting and diagnostics keep their existing behavior
+and may initially fail while Rider starts. Use `/rider-status` to check the launch
+request, MCP connection, and tools. A successful launch request does not prove
+Rider opened the project.
 
 ## What to expect
 

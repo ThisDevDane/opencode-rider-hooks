@@ -132,6 +132,7 @@ export async function withDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   lifetime: AbortSignal,
   milliseconds: number,
+  timeoutMessage = "Rider post-edit operation timed out.",
 ): Promise<T> {
   lifetime.throwIfAborted()
 
@@ -142,7 +143,7 @@ export async function withDeadline<T>(
   signal.addEventListener("abort", onAbort, { once: true })
 
   const timer = setTimeout(() => {
-    deadline.abort(new Error("Rider post-edit operation timed out."))
+    deadline.abort(new Error(timeoutMessage))
   }, milliseconds)
 
   try {

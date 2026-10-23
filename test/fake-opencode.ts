@@ -1,12 +1,18 @@
 import type { Mcp, Plugin } from "@opencode/plugin"
 import type { CommandDefinition, CommandInvocation } from "@opencode/plugin/promise/command"
+import type { SessionPrompt } from "@opencode/plugin/promise/session"
 import type { Result } from "@opencode/plugin/promise/tool"
-import riderHooks from "../index.ts"
+import riderHooks, { register } from "../index.ts"
 import type { StepName } from "../rider.ts"
+import type { launchRider } from "../worktrees.ts"
 
 export type ToolState = "available" | "unavailable" | "denied" | "failed"
 
 interface FixtureOptions {
+  pluginOptions?: Record<string, unknown>
+  launch?: typeof launchRider
+  existingSession?: boolean
+  onSessionGet?: (count: number) => Promise<void>
   workingDirectory?: string
   canonicalRoot?: string
   mcpServer?: Mcp.ServerConfig
@@ -45,6 +51,7 @@ interface TestEvent {
 type AfterEditHook = (event: TestEvent) => Promise<void>
 type PromptRequest = Parameters<Plugin.Context["session"]["prompt"]>[0]
 type SyntheticRequest = Parameters<Plugin.Context["session"]["synthetic"]>[0]
+type PublicEvent = ReturnType<Plugin.Context["event"]["subscribe"]> extends AsyncIterable<infer Event> ? Event : never
 
 export function createFixture(repositoryRoot: string, options: FixtureOptions = {}) {
   let afterEdit: AfterEditHook | undefined
@@ -53,6 +60,13 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   let mcpStatus: Mcp.Status = options.mcpStatus ?? { status: mcpServer?.disabled ? "disabled" : "connected" }
   let formatterState = options.formatter
   let diagnosticsState = options.diagnostics
+  let sessionDirectory = options.workingDirectory ?? repositoryRoot
+  let sessionProject = "project"
+  let parentID: string | undefined
+  let onPrompt: ((event: SessionPrompt) => Promise<void>) | undefined
+  const events: PublicEvent[] = []
+  let wake: (() => void) | undefined
+  let subscriptionSignal: AbortSignal | undefined
   const formatRequests: FormatRequest[] = []
   const diagnosticRequests: DiagnosticRequest[] = []
   const permissionActions: string[] = []
@@ -105,9 +119,11 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   // Only implement the OpenCode methods this plugin uses. Keep the cast here,
   // rather than weakening the event and request types throughout the tests.
   const plugin = {
+    options: options.pluginOptions ?? {},
     location: {
       directory: options.workingDirectory ?? repositoryRoot,
       project: {
+        id: "project",
         directory: repositoryRoot,
         canonical: options.canonicalRoot ?? repositoryRoot,
       },
@@ -139,18 +155,48 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
       },
     },
     session: {
+      async list() {
+        return {
+          data: options.existingSession ? [{
+            id: "session", projectID: sessionProject, parentID,
+            location: { directory: sessionDirectory },
+          }] : [],
+          cursor: {},
+        }
+      },
+      async hook(name: string, callback: typeof onPrompt) {
+        if (name !== "prompt") throw new Error(`Unexpected session hook: ${name}`)
+        onPrompt = callback
+      },
       async get() {
         lookupCounts.sessions++
         if (options.lookupErrors?.session) {
           throw new Error(options.lookupErrors.session)
         }
-        return { location: { directory: options.workingDirectory ?? repositoryRoot } }
+        await options.onSessionGet?.(lookupCounts.sessions)
+        return { projectID: sessionProject, parentID, location: { directory: sessionDirectory } }
       },
       async synthetic(request: SyntheticRequest) {
         syntheticMessages.push(request)
       },
       async prompt(request: PromptRequest) {
         prompts.push(request)
+      },
+    },
+    event: {
+      async *subscribe({ signal }: { signal: AbortSignal }) {
+        subscriptionSignal = signal
+        const onAbort = () => wake?.()
+        signal.addEventListener("abort", onAbort)
+        try {
+          while (!signal.aborted) {
+            const event = events.shift()
+            if (event) yield event
+            else await new Promise<void>(resolve => { wake = resolve })
+          }
+        } finally {
+          signal.removeEventListener("abort", onAbort)
+        }
       },
     },
     tool: {
@@ -202,7 +248,9 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
   }
 
   async function start() {
-    const cleanup = await riderHooks.setup(plugin)
+    const cleanup = options.launch
+      ? await register(plugin, plugin.location.project.directory, options.launch)
+      : await riderHooks.setup(plugin)
     return {
       async run() {
         if (!afterEdit) {
@@ -224,6 +272,15 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
           delivery,
         })
       },
+      async runPrompt(metadata?: Record<string, unknown>) {
+        await onPrompt?.({
+          sessionID: event.sessionID as SessionPrompt["sessionID"],
+          messageID: event.messageID as SessionPrompt["messageID"],
+          prompt: { text: "Work on this project" },
+          delivery: "steer",
+          metadata,
+        })
+      },
       cleanup: () => cleanup?.(),
     }
   }
@@ -238,6 +295,20 @@ export function createFixture(repositoryRoot: string, options: FixtureOptions = 
     commands,
     prompts,
     syntheticMessages,
+    emit(type: "session.created" | "session.moved" | "session.viewed", projectID = "project") {
+      events.push({
+        id: "event", created: Date.now(), durable: { aggregateID: "session", seq: 1, version: 1 },
+        type,
+        data: { sessionID: event.sessionID, projectID, location: { directory: sessionDirectory }, idle: 0, slug: "session", version: "2.1.0" },
+      } as PublicEvent)
+      wake?.()
+    },
+    subscriptionSignal: () => subscriptionSignal,
+    setSession(directory: string, projectID = "project", parent?: string) {
+      sessionDirectory = directory
+      sessionProject = projectID
+      parentID = parent
+    },
     start,
     setMcpServer(server: Mcp.ServerConfig | undefined, status: Mcp.Status = { status: "connected" }) {
       mcpServer = server

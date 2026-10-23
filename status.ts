@@ -3,6 +3,7 @@ import type { Mcp, Plugin } from "@opencode/plugin"
 import type { CommandInvocation } from "@opencode/plugin/promise/command"
 import { isInsideDirectory } from "./files.ts"
 import { configuredProjectPath, projectDirectory } from "./projects.ts"
+import type { WorktreeOpening } from "./opening.ts"
 import { errorMessage, RIDER_TOOL_NAMES } from "./rider.ts"
 
 export async function riderStatus(
@@ -10,6 +11,7 @@ export async function riderStatus(
   sessionID: CommandInvocation["sessionID"],
   checkoutRoot: string,
   server: Mcp.ServerConfig | undefined,
+  opening: WorktreeOpening,
 ): Promise<string> {
   const lines = [
     "Rider hooks status",
@@ -17,6 +19,10 @@ export async function riderStatus(
     `Checkout: ${checkoutRoot}`,
   ]
   let ready = true
+
+  const autoOpen = opening.status()
+  lines.push(autoOpen.text)
+  ready &&= autoOpen.ready
 
   try {
     const session = await plugin.session.get({ sessionID })
